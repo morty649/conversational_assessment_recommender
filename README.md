@@ -25,7 +25,7 @@ shl-conversational-assessment-recommender-agent/
 │   │   ├── retrieval.py
 │   │   ├── reranker.py
 │   │   ├── llm.py
-│   │   ├── guardrails.py
+│   │   ├--
 │   │   └── agent.py
 │   │
 │   └── utils/
