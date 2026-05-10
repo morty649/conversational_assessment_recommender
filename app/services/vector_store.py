@@ -1,6 +1,7 @@
 import chromadb
 import hashlib
 import re
+from time import perf_counter
 
 from app.services.embeddings import embed_text
 from app.core.config import settings
@@ -55,12 +56,17 @@ class ChromaVectorStore:
         )
 
     def semantic_search(self, query: str, k: int = 10):
+        timings = {}
 
+        stage_started = perf_counter()
         query_embedding = embed_text([query])[0]
+        timings["embedding"] = perf_counter() - stage_started
 
+        stage_started = perf_counter()
         result = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=k,
         )
+        timings["chroma_query"] = perf_counter() - stage_started
 
-        return result
+        return result, timings

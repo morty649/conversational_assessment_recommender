@@ -180,6 +180,8 @@ class SHLAgent:
             k=settings.TOP_K_RETRIEVAL,
         )
         timings["retrieval"] = perf_counter() - stage_started
+        for name, elapsed in getattr(self.retriever, "last_timings", {}).items():
+            timings[name] = elapsed
 
         stage_started = perf_counter()
         ranked = rerank(
