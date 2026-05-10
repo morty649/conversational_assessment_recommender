@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -14,15 +13,23 @@ STOPWORDS = {
     "i", "we", "you", "me", "my", "our", "is", "are", "am", "be", "need", "needs",
     "want", "wanted", "looking", "look", "assessment", "test", "tests", "tool",
     "role", "job", "hire", "hiring", "candidate", "candidates", "please", "show",
-    "give", "find", "best", "right", "fit", "fitment", "screening",
+    "give", "find", "best", "right", "fit", "fitment", "screening", "quickly",
+    "daily", "day", "days",
 }
 
-SENIORITY_HINTS = {
-    "entry-level", "entry level", "graduate", "junior", "mid", "mid-level",
-    "mid professional", "mid-professional", "senior", "manager", "director",
-    "executive", "supervisor", "front line manager", "front-line manager",
-    "general population",
+QUICK_HINTS = {"quick", "quickly", "fast", "short", "brief", "screen", "screening"}
+OFFICE_HINTS = {
+    "admin", "administrative", "assistant", "assistants", "office", "clerical",
+    "back office", "support", "operations", "coordinator", "secretary", "reception",
 }
+EXCEL_HINTS = {"excel", "spreadsheet", "sheet", "workbook"}
+WORD_HINTS = {"word", "document", "docs", "doc", "processing"}
+PERSONALITY_HINTS = {
+    "personality", "behavior", "behaviour", "fit", "fitment", "culture",
+    "stakeholder", "communication", "teamwork", "collaboration", "leadership",
+    "people", "interaction",
+}
+SIMULATION_HINTS = {"simulation", "simulate", "practical", "hands-on", "end-to-end"}
 
 @dataclass
 class RankedCandidate:
@@ -47,30 +54,11 @@ def _char_similarity(a: str, b: str) -> float:
 def _token_overlap(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
-    inter = len(a & b)
-    union = len(a | b)
-    return inter / union if union else 0.0
+    return len(a & b) / len(a | b)
 
 def _extract_duration_hint(query: str) -> int | None:
     m = re.search(r"(\d{1,3})\s*(?:min|mins|minute|minutes)\b", query.lower())
     return int(m.group(1)) if m else None
-
-def _extract_job_level_hints(query: str) -> set[str]:
-    q = query.lower()
-    return {hint for hint in SENIORITY_HINTS if hint in q}
-
-def _is_contact_center_query(query: str) -> bool:
-    return any(
-        term in query
-        for term in [
-            "contact centre",
-            "contact center",
-            "call center",
-            "call centre",
-            "inbound call",
-            "customer service",
-        ]
-    )
 
 def _parse_duration_text(duration: str) -> int | None:
     m = re.search(r"(\d{1,3})", duration or "")
@@ -86,6 +74,42 @@ def _field_text(item: CatalogItem) -> str:
         " ".join(item.keys or []),
     ]).strip()
 
+def _has_any(query: str, phrases: set[str]) -> bool:
+    q = query.lower()
+    return any(p in q for p in phrases)
+
+def _extract_signals(query: str) -> dict:
+    q = query.lower()
+    q_tokens = set(_tokens(q))
+    return {
+        "quick": _has_any(q, QUICK_HINTS),
+        "office": _has_any(q, OFFICE_HINTS),
+        "excel": _has_any(q, EXCEL_HINTS),
+        "word": _has_any(q, WORD_HINTS),
+        "personality": _has_any(q, PERSONALITY_HINTS),
+        "simulation": _has_any(q, SIMULATION_HINTS),
+        "duration_hint": _extract_duration_hint(q),
+        "query_tokens": q_tokens,
+    }
+
+def _item_family(item: CatalogItem) -> str:
+    text = _normalize(" ".join([
+        item.name or "",
+        item.description or "",
+        " ".join(item.keys or []),
+    ]))
+    if any(x in text for x in ["excel", "spreadsheet"]):
+        return "excel"
+    if any(x in text for x in ["word", "document", "word processing"]):
+        return "word"
+    if any(x in text for x in ["personality", "opq", "behaviour", "behavior"]):
+        return "personality"
+    if any(x in text for x in ["basic computer literacy", "computer literacy", "office"]):
+        return "office_basics"
+    if any(x in text for x in ["simulation", "work sample", "practical", "hands-on"]):
+        return "simulation"
+    return "other"
+
 def rerank(query: str, candidates: list[dict], top_k: int = 10) -> list[RankedCandidate]:
     """
     candidates: list of dicts like:
@@ -98,9 +122,8 @@ def rerank(query: str, candidates: list[dict], top_k: int = 10) -> list[RankedCa
     q = _normalize(query)
     q_tokens = _content_tokens(q)
     q_all_tokens = set(_tokens(q))
-    q_duration = _extract_duration_hint(q)
-    q_levels = _extract_job_level_hints(q)
-    contact_center_query = _is_contact_center_query(q)
+    signals = _extract_signals(query)
+    q_duration = signals["duration_hint"]
 
     ranked: list[RankedCandidate] = []
 
@@ -109,120 +132,123 @@ def rerank(query: str, candidates: list[dict], top_k: int = 10) -> list[RankedCa
         semantic = float(cand.get("semantic_score", 0.0))
         lexical = float(cand.get("lexical_score", 0.0))
 
-        name = _normalize(item.name)
+        name = _normalize(item.name or "")
         doc = _normalize(_field_text(item))
         name_tokens = _content_tokens(name)
         doc_tokens = _content_tokens(doc)
+        family = _item_family(item)
 
         score = 0.0
         debug = {}
 
-        score += 0.65 * semantic
-        score += 0.10 * lexical
+        # Base retrieval scores
+        score += 0.50 * semantic
+        score += 0.08 * lexical
         debug["semantic"] = semantic
         debug["lexical"] = lexical
 
+        # Strong title matching
         title_exact = 1.0 if item.name and item.name.lower() in q else 0.0
         title_overlap = _token_overlap(q_tokens, name_tokens)
         title_sim = _char_similarity(q, name)
 
-        score += 0.18 * title_overlap
-        score += 0.12 * title_sim
         score += 0.20 * title_exact
+        score += 0.14 * title_overlap
+        score += 0.08 * title_sim
 
+        debug["title_exact"] = title_exact
         debug["title_overlap"] = title_overlap
         debug["title_sim"] = title_sim
-        debug["title_exact"] = title_exact
 
-        job_level_hit = _token_overlap(q_all_tokens, {x.lower() for x in (item.job_levels or [])})
+        # Field-level match
         key_hit = _token_overlap(q_all_tokens, {x.lower() for x in (item.keys or [])})
         lang_hit = _token_overlap(q_all_tokens, {x.lower() for x in (item.languages or [])})
+        job_level_hit = _token_overlap(q_all_tokens, {x.lower() for x in (item.job_levels or [])})
+        desc_sim = _char_similarity(q, doc)
 
-        score += 0.16 * job_level_hit
         score += 0.14 * key_hit
-        score += 0.06 * lang_hit
+        score += 0.04 * lang_hit
+        score += 0.08 * job_level_hit
+        score += 0.04 * desc_sim
 
-        debug["job_level_hit"] = job_level_hit
         debug["key_hit"] = key_hit
         debug["lang_hit"] = lang_hit
+        debug["job_level_hit"] = job_level_hit
+        debug["desc_sim"] = desc_sim
 
+        # Duration preference: shorter gets favored for "quick" requests
         item_duration = _parse_duration_text(item.duration)
         duration_bonus = 0.0
+
         if q_duration and item_duration:
             diff = abs(q_duration - item_duration)
             duration_bonus = max(0.0, 1.0 - (diff / max(q_duration, item_duration, 1)))
             score += 0.08 * duration_bonus
+
+        if signals["quick"] and item_duration:
+            if item_duration <= 10:
+                score += 0.22
+            elif item_duration <= 15:
+                score += 0.12
+            elif item_duration >= 20:
+                score -= 0.18
+
         debug["duration_bonus"] = duration_bonus
 
-        level_bonus = 0.0
-        if q_levels and item.job_levels:
-            item_levels = {x.lower().strip() for x in item.job_levels}
-            if any(h in item_levels for h in q_levels):
-                level_bonus = 1.0
-                score += 0.14
-        debug["level_bonus"] = level_bonus
+        # Role-specific boosts for admin/office requests
+        if signals["office"]:
+            if family in {"excel", "word", "office_basics"}:
+                score += 0.28
+            if any(x in doc for x in ["administrative", "office", "clerical", "support"]):
+                score += 0.12
 
-        desc_sim = _char_similarity(q, doc)
-        score += 0.05 * desc_sim
-        debug["desc_sim"] = desc_sim
+        # Software-specific boosts
+        if signals["excel"]:
+            if family == "excel":
+                score += 0.35
+            if "spreadsheet" in doc or "excel" in doc:
+                score += 0.10
 
+        if signals["word"]:
+            if family == "word":
+                score += 0.35
+            if "word processing" in doc or "document" in doc:
+                score += 0.10
+
+        # Personality / behavioural fit for screening requests
+        if signals["personality"] or any(x in q_all_tokens for x in {"screen", "screening", "hire", "hiring"}):
+            if family == "personality":
+                score += 0.30
+            if any(x in doc for x in ["personality", "behavior", "behaviour", "work style"]):
+                score += 0.10
+
+        # Prefer knowledge tools over simulations when the user says "quick"
+        if signals["quick"]:
+            if family == "simulation":
+                score -= 0.22
+            if any(x in doc for x in ["knowledge", "skills", "mcq", "multiple choice"]):
+                score += 0.10
+
+        # If user explicitly asks for practical/simulation, flip that preference
+        if signals["simulation"]:
+            if family == "simulation":
+                score += 0.28
+            if any(x in doc for x in ["practical", "simulation", "work sample"]):
+                score += 0.10
+
+        # General behavioral words
         behavioral_words = {
-    "stakeholder",
-    "communication",
-    "collaboration",
-    "teamwork",
-    "leadership",
-    "personality",
-    "client",
-    "manager",
-    "people",
-    "interaction",
+            "stakeholder", "communication", "collaboration", "teamwork",
+            "leadership", "personality", "client", "manager", "people", "interaction"
         }
+        if signals["personality"]:
+            behavior_hits = sum(1 for word in behavioral_words if word in doc)
+            score += 0.03 * behavior_hits
 
-        query_has_behavior = any(
-            word in q_tokens
-            for word in behavioral_words
-        )
-
-        item_text = (
-            item.description.lower()
-            + " "
-            + " ".join(item.keys).lower()
-            )
-
-        if query_has_behavior:
-
-            behavior_hits = sum(
-            1
-            for word in behavioral_words
-            if word in item_text
-            )
-
-            score += 0.12 * behavior_hits
-
-        if contact_center_query:
-            item_name = item.name.lower()
-            item_doc = f"{item_name} {item.description.lower()}"
-
-            if "contact center call simulation" in item_name:
-                score += 2.0
-            if "svar" in item_name and "spoken english" in item_name:
-                score += 2.2
-                if any(token in q_all_tokens for token in {"us", "usa"}):
-                    if "(us)" in item_name or " us " in f" {item_name} ":
-                        score += 0.8
-            if "entry level customer serv" in item_name:
-                score += 1.0
-            if "customer service phone simulation" in item_name:
-                score += 0.55
-            if "customer service phone solution" in item_name:
-                score += 0.25
-            if "sales & service" in item_name:
-                score -= 0.5
-            if "assessment and development center exercises" in item_name:
-                score -= 0.45
-            if "contact" in item_doc or "customer service" in item_doc:
-                score += 0.15
+        # Gentle promotion for exact admin-assistant style items
+        if any(x in q_all_tokens for x in {"assistant", "assistants", "admin", "administrative"}):
+            if family in {"office_basics", "word", "excel"}:
+                score += 0.10
 
         ranked.append(
             RankedCandidate(
@@ -234,59 +260,35 @@ def rerank(query: str, candidates: list[dict], top_k: int = 10) -> list[RankedCa
             )
         )
 
-    ranked.sort(
-    key=lambda x: x.score,
-    reverse=True
-)
+    ranked.sort(key=lambda x: x.score, reverse=True)
 
+    # Diversity pass: keep useful variety, but don't let near-duplicates dominate.
+    final: list[RankedCandidate] = []
     seen_names = set()
-    seen_categories = {}
-
-    final = []
+    seen_family = {}
 
     for r in ranked:
-
-        name_key = (
-            r.item.name.lower().strip()
-        )
-
+        name_key = (r.item.name or "").lower().strip()
         if name_key in seen_names:
             continue
 
-        categories = (
-            r.item.keys
-            if r.item.keys
-            else ["Unknown"]
-        )
+        family = _item_family(r.item)
+        penalty = 0.0
 
-        diversity_penalty = 0.0
+        # Light penalty only when a family is over-represented.
+        family_count = seen_family.get(family, 0)
+        if family_count >= 1:
+            penalty += 0.06 * family_count
 
-        for cat in categories:
+        # For quick admin screens, allow one strong Excel, one strong Word, and optionally one personality.
+        if signals["office"] and signals["quick"]:
+            if family in {"excel", "word", "personality"}:
+                penalty -= 0.02  # slight encouragement
 
-            count = seen_categories.get(cat, 0)
-
-            diversity_penalty += (
-                count * 0.08
-            )
-
-        adjusted_score = (
-            r.score - diversity_penalty
-        )
-
-        r.score = adjusted_score
-
+        r.score -= penalty
         final.append(r)
-
         seen_names.add(name_key)
+        seen_family[family] = family_count + 1
 
-        for cat in categories:
-            seen_categories[cat] = (
-                seen_categories.get(cat, 0) + 1
-            )
-
-    final.sort(
-        key=lambda x: x.score,
-        reverse=True
-    )
-
+    final.sort(key=lambda x: x.score, reverse=True)
     return final[:top_k]
