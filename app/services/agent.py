@@ -1,174 +1,7 @@
-import re
-
-from app.models.schemas import ChatResponse, Recommendation
-from app.prompts.prompts import COMPARE_PROMPT, SYSTEM_PROMPT
+from app.models.schemas import AgentResponse, ChatResponse, Recommendation
+from app.prompts.prompts import SYSTEM_PROMPT
 from app.services.llm import generate_reply
 from app.services.reranker import rerank
-
-REFUSAL = (
-    "I can only help with SHL assessment recommendations using the supplied "
-    "SHL catalog. Share the role, seniority, skills, or hiring context and "
-    "I can recommend relevant assessments."
-)
-
-OFF_TOPIC_TERMS = {
-    "legal",
-    "legal advice",
-    "lawsuit",
-    "visa",
-    "immigration",
-    "medical",
-    "diagnosis",
-    "therapy",
-    "investment",
-    "stock",
-    "crypto",
-    "politics",
-    "recipe",
-    "weather",
-    "ignore previous instructions",
-    "ignore the previous instructions",
-    "system prompt",
-    "developer message",
-    "jailbreak",
-    "pretend you are",
-}
-
-LANGUAGE_TERMS = {
-    "english",
-    "spanish",
-    "french",
-    "german",
-    "dutch",
-    "italian",
-    "portuguese",
-    "chinese",
-    "japanese",
-    "korean",
-    "arabic",
-}
-
-ENGLISH_ACCENT_TERMS = {
-    "us",
-    "usa",
-    "u.s.",
-    "u.s.a.",
-    "uk",
-    "u.k.",
-    "british",
-    "australian",
-    "australia",
-    "indian",
-    "india",
-    "international",
-}
-
-
-def is_offtopic(text: str) -> bool:
-    normalized = text.lower()
-    return any(term in normalized for term in OFF_TOPIC_TERMS)
-
-
-def _has_word(text: str, word: str) -> bool:
-    return re.search(rf"\b{re.escape(word)}\b", text) is not None
-
-
-def _is_compare_request(text: str) -> bool:
-    normalized = text.lower()
-    return any(
-        phrase in normalized
-        for phrase in [
-            "compare",
-            "difference between",
-            "different from",
-            "how is",
-            "versus",
-            " vs ",
-        ]
-    )
-
-
-def _is_confirmation(text: str) -> bool:
-    normalized = text.lower()
-    return any(
-        phrase in normalized
-        for phrase in [
-            "confirmed",
-            "perfect",
-            "looks good",
-            "that works",
-            "final",
-            "go with",
-            "sounds good",
-        ]
-    )
-
-
-def _contact_center_needs_language(context: str) -> bool:
-    normalized = context.lower()
-    is_contact_center = any(
-        term in normalized
-        for term in [
-            "contact centre",
-            "contact center",
-            "call center",
-            "call centre",
-            "inbound call",
-            "customer service",
-        ]
-    )
-    has_language = any(_has_word(normalized, term) for term in LANGUAGE_TERMS)
-    return is_contact_center and not has_language
-
-
-def _contact_center_needs_english_accent(context: str) -> bool:
-    normalized = context.lower()
-    is_contact_center = any(
-        term in normalized
-        for term in [
-            "contact centre",
-            "contact center",
-            "call center",
-            "call centre",
-            "inbound call",
-            "customer service",
-        ]
-    )
-    has_english = _has_word(normalized, "english")
-    has_accent = any(_has_word(normalized, term) for term in ENGLISH_ACCENT_TERMS)
-    return is_contact_center and has_english and not has_accent
-
-
-def _expanded_retrieval_query(context: str) -> str:
-    normalized = context.lower()
-    is_contact_center = any(
-        term in normalized
-        for term in [
-            "contact centre",
-            "contact center",
-            "call center",
-            "call centre",
-            "inbound call",
-            "customer service",
-        ]
-    )
-
-    if not is_contact_center:
-        return context
-
-    expansion = [
-        "spoken language screen",
-        "SVAR Spoken English",
-        "Contact Center Call Simulation",
-        "Customer Service Phone Simulation",
-        "Entry Level Customer Serv Retail Contact Center",
-        "high volume inbound customer service simulation",
-    ]
-
-    if any(_has_word(normalized, term) for term in ["us", "usa", "u.s.", "u.s.a."]):
-        expansion.append("English USA US")
-
-    return f"{context} {' '.join(expansion)}"
 
 
 def _catalog_context(ranked) -> str:
@@ -195,17 +28,20 @@ def _catalog_context(ranked) -> str:
     return "\n\n".join(blocks)
 
 
-def _fallback_reply(recommendations: list[Recommendation]) -> str:
-    if not recommendations:
-        return (
-            "I could not find a grounded SHL catalog match for that request. "
-            "Please share the role, seniority, skills, and any constraints."
-        )
+def _parse_agent_response(content: str) -> AgentResponse:
+    if hasattr(AgentResponse, "model_validate_json"):
+        return AgentResponse.model_validate_json(content)
+    return AgentResponse.parse_raw(content)
 
-    names = ", ".join(r.name for r in recommendations[:5])
-    return (
-        f"I found {len(recommendations)} SHL catalog-backed recommendations: "
-        f"{names}. These are grounded in the retrieved SHL assessment catalog."
+
+def _fallback_response() -> AgentResponse:
+    return AgentResponse(
+        intent="clarification_needed",
+        reply=(
+            "I need a little more context before recommending an SHL assessment. "
+            "Who is this for, and is the use case hiring, development, or feedback?"
+        ),
+        needs_clarification=True,
     )
 
 
@@ -214,93 +50,21 @@ class SHLAgent:
         self.retriever = retriever
 
     def handle_chat(self, messages):
-        last_user = next(
-            (m["content"] for m in reversed(messages) if m["role"] == "user"),
-            "",
-        )
-
-        if is_offtopic(last_user):
-            return ChatResponse(
-                reply=REFUSAL,
-                recommendations=[],
-                end_of_conversation=True,
-            )
-
-        if self.needs_clarification(messages):
-            return ChatResponse(
-                reply="What role and seniority level are you hiring for?",
-                recommendations=[],
-                end_of_conversation=False,
-            )
-
-        conversation_context = " ".join(
+        conversation_context = "\n".join(
             m["content"] for m in messages if m["role"] == "user"
         )
 
-        if _contact_center_needs_language(conversation_context):
-            return ChatResponse(
-                reply=(
-                    "What language will the contact centre calls be in? "
-                    "That determines the right spoken-language screen."
-                ),
-                recommendations=[],
-                end_of_conversation=False,
-            )
-
-        if _contact_center_needs_english_accent(conversation_context):
-            return ChatResponse(
-                reply=(
-                    "Which English accent should the spoken-language screen use: "
-                    "US, UK, Australian, Indian, or International?"
-                ),
-                recommendations=[],
-                end_of_conversation=False,
-            )
-
-        retrieval_query = _expanded_retrieval_query(conversation_context)
-        retrieved = self.retriever.retrieve(retrieval_query, k=40)
-        ranked = rerank(query=retrieval_query, candidates=retrieved, top_k=10)
-
-        if _is_compare_request(last_user):
-            compare_messages = [
-                {"role": "system", "content": SYSTEM_PROMPT.strip()},
-                {
-                    "role": "assistant",
-                    "content": (
-                        f"{COMPARE_PROMPT.strip()}\n\n"
-                        f"Retrieved SHL catalog context:\n{_catalog_context(ranked)}"
-                    ),
-                },
-                *messages,
-            ]
-
-            try:
-                reply = generate_reply(compare_messages)
-            except Exception:
-                reply = _fallback_reply([])
-
-            return ChatResponse(
-                reply=reply,
-                recommendations=[],
-                end_of_conversation=False,
-            )
-
-        recommendations = [
-            Recommendation(
-                name=r.item.name,
-                url=r.item.link,
-                test_type=", ".join(r.item.keys) if r.item.keys else "Unknown",
-            )
-            for r in ranked
-        ]
+        retrieved = self.retriever.retrieve(conversation_context, k=40)
+        ranked = rerank(query=conversation_context, candidates=retrieved, top_k=10)
+        catalog_by_name = {r.item.name: r.item for r in ranked}
 
         llm_messages = [
             {"role": "system", "content": SYSTEM_PROMPT.strip()},
             {
                 "role": "assistant",
                 "content": (
-                    "Use this retrieved SHL catalog context as the only source "
-                    "for recommendations. Do not invent assessment names or URLs.\n\n"
+                    "Retrieved SHL catalog context. This is the only source you "
+                    "may use for assessment names, URLs, and recommendation facts.\n\n"
                     f"{_catalog_context(ranked)}"
                 ),
             },
@@ -308,28 +72,44 @@ class SHLAgent:
         ]
 
         try:
-            reply = generate_reply(llm_messages)
+            agent_response = _parse_agent_response(
+                generate_reply(
+                    llm_messages,
+                    response_format={"type": "json_object"},
+                )
+            )
         except Exception:
-            reply = _fallback_reply(recommendations)
+            agent_response = _fallback_response()
 
-        return ChatResponse(
-            reply=reply,
-            recommendations=recommendations,
-            end_of_conversation=_is_confirmation(last_user),
+        recommendation_names = (
+            agent_response.recommendations
+            if agent_response.intent in {
+                "recommendation_request",
+                "comparison_request",
+                "conversation_complete",
+            }
+            else []
         )
 
-    def needs_clarification(self, messages):
-        text = " ".join(
-            m["content"] for m in messages if m["role"] == "user"
-        ).strip().lower()
+        recommendations = [
+            Recommendation(
+                name=name,
+                url=catalog_by_name[name].link,
+                test_type=(
+                    ", ".join(catalog_by_name[name].keys)
+                    if catalog_by_name[name].keys
+                    else "Unknown"
+                ),
+            )
+            for name in recommendation_names
+            if name in catalog_by_name
+        ]
 
-        vague_phrases = {
-            "i need an assessment",
-            "need an assessment",
-            "assessment",
-            "test",
-        }
-
-        return text in vague_phrases or (
-            len(text.split()) < 5 and any(p in text for p in vague_phrases)
+        return ChatResponse(
+            reply=agent_response.reply or agent_response.clarification_question or "",
+            recommendations=recommendations,
+            end_of_conversation=agent_response.intent in {
+                "conversation_complete",
+                "off_topic",
+            },
         )

@@ -1,5 +1,5 @@
-from typing import List, Literal
-from pydantic import BaseModel
+from typing import List, Literal, Optional
+from pydantic import BaseModel, Field
 
 class Message(BaseModel):
     role: Literal["user", "assistant"]
@@ -12,6 +12,19 @@ class Recommendation(BaseModel):
     name: str
     url: str
     test_type: str
+
+class AgentResponse(BaseModel):
+    intent: Literal[
+        "recommendation_request",
+        "clarification_needed",
+        "comparison_request",
+        "off_topic",
+        "conversation_complete",
+    ]
+    reply: str
+    clarification_question: Optional[str] = None
+    recommendations: List[str] = Field(default_factory=list)
+    needs_clarification: bool = False
 
 class ChatResponse(BaseModel):
     reply: str

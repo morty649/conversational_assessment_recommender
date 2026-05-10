@@ -1,7 +1,16 @@
 import chromadb
+import hashlib
+import re
 
 from app.services.embeddings import embed_text
 from app.core.config import settings
+
+
+def _collection_name() -> str:
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", settings.EMBED_MODEL).strip("_")
+    digest = hashlib.sha1(settings.EMBED_MODEL.encode()).hexdigest()[:8]
+    return f"shl_catalog_{slug[:32]}_{digest}"
+
 
 class ChromaVectorStore:
 
@@ -12,7 +21,7 @@ class ChromaVectorStore:
         )
 
         self.collection = self.client.get_or_create_collection(
-            name="shl_catalog"
+            name=_collection_name()
         )
 
     def add_documents(self, items):
@@ -45,8 +54,10 @@ class ChromaVectorStore:
 
     def semantic_search(self, query: str, k: int = 10):
 
+        query_embedding = embed_text([query])[0]
+
         result = self.collection.query(
-            query_texts=[query],
+            query_embeddings=[query_embedding],
             n_results=k,
         )
 

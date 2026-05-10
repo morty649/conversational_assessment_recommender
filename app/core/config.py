@@ -7,7 +7,8 @@ class Settings(BaseSettings):
     CHROMA_PATH: str = "data/chroma"
     CATALOG_PATH: str = "data/shl_catalog.json"
 
-    EMBED_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    EMBED_MODEL: str = "sentence-transformers/all-mpnet-base-v2"
+    EMBED_LOCAL_FILES_ONLY: bool = True
 
     TOP_K_RETRIEVAL: int = 20
     TOP_K_FINAL: int = 10
