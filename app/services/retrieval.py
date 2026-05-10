@@ -24,7 +24,7 @@ class HybridRetriever:
             if item is None:
                 continue
 
-            score = 1.0 / (1.0 + float(dist))
+            score = max(0.0, 1.0 - dist)
             merged[name.lower().strip()] = {
                 "item": item,
                 "semantic_score": score,

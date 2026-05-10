@@ -1,5 +1,8 @@
 from app.models.schemas import AgentResponse, ChatResponse, Recommendation
-from app.prompts.prompts import SYSTEM_PROMPT
+from app.prompts.prompts import (
+    SYSTEM_PROMPT,
+    QUERY_SYSTEM_PROMPT,
+)
 from app.services.llm import generate_reply
 from app.services.reranker import rerank
 
@@ -74,15 +77,31 @@ class SHLAgent:
             if len(user_messages) >= 2:
                 query_message = user_messages[-2]
 
-        retrieval_query = query_message
+        conversation_context = []
 
-        assistant_context = " ".join(
-            m["content"]
-            for m in messages
-            if m["role"] == "assistant"
-        )
+        for m in messages:
+            if m["role"] == "user":
+                conversation_context.append({
+                    "role": "user",
+                    "content": m["content"],
+                })
 
-        retrieval_query += "\n" + assistant_context
+            elif m["role"] == "assistant":
+                # Preserve recommendation/history context
+                conversation_context.append({
+                    "role": "assistant",
+                    "content": m["content"][:500],
+                })
+
+        query_messages = [
+            {
+                "role": "system",
+                "content": QUERY_SYSTEM_PROMPT,
+            },
+            *conversation_context,
+        ]
+
+        retrieval_query = generate_reply(query_messages)
 
         retrieved = self.retriever.retrieve(retrieval_query, k=40)
         ranked = rerank(
@@ -134,10 +153,19 @@ class SHLAgent:
                     if catalog_by_name[name].keys
                     else "Unknown"
                 ),
+                duration=(
+                    catalog_by_name[name].duration
+                    or "Unknown"
+                ),
+                languages=(
+                    ", ".join(catalog_by_name[name].languages)
+                    if catalog_by_name[name].languages
+                    else "Unknown"
+                ),
             )
             for name in recommendation_names
             if name in catalog_by_name
-        ]
+]
 
         final_reply = (
             agent_response.reply

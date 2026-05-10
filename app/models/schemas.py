@@ -12,6 +12,8 @@ class Recommendation(BaseModel):
     name: str
     url: str
     test_type: str
+    duration: str
+    languages: str
 
 class AgentResponse(BaseModel):
     intent: Literal[

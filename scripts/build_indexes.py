@@ -18,3 +18,4 @@ store = ChromaVectorStore()
 store.add_documents(catalog)
 
 print("Indexes built.")
+
