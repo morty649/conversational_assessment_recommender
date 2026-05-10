@@ -50,14 +50,46 @@ class SHLAgent:
         self.retriever = retriever
 
     def handle_chat(self, messages):
-        latest_user_message = next(
-            m["content"]
-            for m in reversed(messages)
-            if m["role"] == "user"
-            )
+        LOW_SIGNAL_MESSAGES = {
+            "perfect",
+            "confirmed",
+            "sounds good",
+            "great",
+            "that's what we need",
+            "thats what we need",
+            "works for us",
+        }
 
-        retrieved = self.retriever.retrieve(latest_user_message, k=40)
-        ranked = rerank(query=latest_user_message, candidates=retrieved, top_k=10)
+        user_messages = [
+            m["content"]
+            for m in messages
+            if m["role"] == "user"
+        ]
+
+        latest_user_message = user_messages[-1]
+
+        query_message = latest_user_message
+
+        if latest_user_message.lower().strip() in LOW_SIGNAL_MESSAGES:
+            if len(user_messages) >= 2:
+                query_message = user_messages[-2]
+
+        retrieval_query = query_message
+
+        assistant_context = " ".join(
+            m["content"]
+            for m in messages
+            if m["role"] == "assistant"
+        )
+
+        retrieval_query += "\n" + assistant_context
+
+        retrieved = self.retriever.retrieve(retrieval_query, k=40)
+        ranked = rerank(
+            query=retrieval_query,
+            candidates=retrieved,
+            top_k=10,
+        )
         catalog_by_name = {r.item.name: r.item for r in ranked}
 
         llm_messages = [
@@ -107,8 +139,20 @@ class SHLAgent:
             if name in catalog_by_name
         ]
 
+        final_reply = (
+            agent_response.reply
+            or agent_response.clarification_question
+            or ""
+            )   
+
+        if recommendations:
+            final_reply += "\n\nRecommended assessments:\n"
+            final_reply += "\n".join(
+                f"- {r.name}" for r in recommendations
+            )
+
         return ChatResponse(
-            reply=agent_response.reply or agent_response.clarification_question or "",
+            reply=final_reply,
             recommendations=recommendations,
             end_of_conversation=agent_response.intent in {
                 "conversation_complete",
