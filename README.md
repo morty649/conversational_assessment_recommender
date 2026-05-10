@@ -210,6 +210,8 @@ GROQ_API_KEY=your_groq_api_key
 
 Optional settings are defined in `app/core/config.py`, including model name, catalog path, Chroma path, and top-k retrieval limits.
 
+By default, local development can download the embedding model if it is not already cached. The Docker image pre-downloads the embedding model, builds the Chroma index during image build, and then runs with `EMBED_LOCAL_FILES_ONLY=true`. This avoids model downloads and index rebuilding during Render startup.
+
 ### 3. Build or refresh indexes
 
 The repository includes catalog data and a persisted Chroma index. If the catalog changes, rebuild the vector index:
@@ -281,6 +283,8 @@ Recommended Render settings:
 | Port | `10000` |
 | Health check path | `/health` |
 | Required environment variable | `GROQ_API_KEY` |
+
+The Docker build caches the Sentence Transformers embedding model and builds the Chroma index in the image, so the deployed service does not depend on a runtime model download or index build before `/health` becomes available.
 
 After deployment, verify:
 

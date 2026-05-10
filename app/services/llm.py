@@ -2,11 +2,14 @@ from groq import Groq
 
 from app.core.config import settings
 
-client = Groq(
-    api_key=settings.GROQ_API_KEY
-)
-
 def generate_reply(messages, response_format=None):
+    if not settings.GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is required for chat generation.")
+
+    client = Groq(
+        api_key=settings.GROQ_API_KEY
+    )
+
     kwargs = {}
     if response_format is not None:
         kwargs["response_format"] = response_format

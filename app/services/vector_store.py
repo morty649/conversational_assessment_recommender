@@ -25,6 +25,8 @@ class ChromaVectorStore:
         )
 
     def add_documents(self, items):
+        if self.collection.count() >= len(items):
+            return
 
         docs = []
         ids = []
