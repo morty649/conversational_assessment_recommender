@@ -50,12 +50,14 @@ class SHLAgent:
         self.retriever = retriever
 
     def handle_chat(self, messages):
-        conversation_context = "\n".join(
-            m["content"] for m in messages if m["role"] == "user"
-        )
+        latest_user_message = next(
+            m["content"]
+            for m in reversed(messages)
+            if m["role"] == "user"
+            )
 
-        retrieved = self.retriever.retrieve(conversation_context, k=40)
-        ranked = rerank(query=conversation_context, candidates=retrieved, top_k=10)
+        retrieved = self.retriever.retrieve(latest_user_message, k=40)
+        ranked = rerank(query=latest_user_message, candidates=retrieved, top_k=10)
         catalog_by_name = {r.item.name: r.item for r in ranked}
 
         llm_messages = [
