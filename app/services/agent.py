@@ -1,10 +1,17 @@
+import logging
+from time import perf_counter
+from uuid import uuid4
+
 from app.models.schemas import AgentResponse, ChatResponse, Recommendation
+from app.core.config import settings
 from app.prompts.prompts import (
     SYSTEM_PROMPT,
     QUERY_SYSTEM_PROMPT,
 )
 from app.services.llm import generate_reply
 from app.services.reranker import rerank
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def _catalog_context(ranked) -> str:
@@ -48,20 +55,72 @@ def _fallback_response() -> AgentResponse:
     )
 
 
+def _build_retrieval_query(messages, latest_user_message: str) -> str:
+    low_signal_messages = {
+        "perfect",
+        "confirmed",
+        "sounds good",
+        "great",
+        "that's what we need",
+        "thats what we need",
+        "works for us",
+    }
+
+    user_messages = [
+        m["content"].strip()
+        for m in messages
+        if m["role"] == "user" and m["content"].strip()
+    ]
+
+    filtered = [
+        msg for msg in user_messages
+        if msg.lower() not in low_signal_messages
+    ]
+
+    if not filtered:
+        filtered = [latest_user_message.strip()]
+
+    recent_messages = filtered[-3:]
+    deduped: list[str] = []
+    seen = set()
+
+    for msg in recent_messages:
+        key = msg.lower().strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(msg)
+
+    return " | ".join(deduped)
+
+
 class SHLAgent:
     def __init__(self, retriever):
         self.retriever = retriever
 
+    def _log_timing(self, request_id: str, timings: dict, **extra):
+        if not settings.ENABLE_CHAT_TIMING_LOGS:
+            return
+
+        timing_text = " ".join(
+            f"{name}_ms={elapsed * 1000:.1f}"
+            for name, elapsed in timings.items()
+        )
+        extra_text = " ".join(
+            f"{name}={value}"
+            for name, value in extra.items()
+        )
+        logger.info(
+            "chat_timing request_id=%s %s %s",
+            request_id,
+            timing_text,
+            extra_text,
+        )
+
     def handle_chat(self, messages):
-        LOW_SIGNAL_MESSAGES = {
-            "perfect",
-            "confirmed",
-            "sounds good",
-            "great",
-            "that's what we need",
-            "thats what we need",
-            "works for us",
-        }
+        request_id = uuid4().hex[:8]
+        timings = {}
+        request_started = perf_counter()
 
         user_messages = [
             m["content"]
@@ -71,44 +130,64 @@ class SHLAgent:
 
         latest_user_message = user_messages[-1]
 
-        query_message = latest_user_message
+        stage_started = perf_counter()
+        retrieval_query = _build_retrieval_query(
+            messages,
+            latest_user_message,
+        )
+        timings["query_build"] = perf_counter() - stage_started
 
-        if latest_user_message.lower().strip() in LOW_SIGNAL_MESSAGES:
-            if len(user_messages) >= 2:
-                query_message = user_messages[-2]
+        if settings.ENABLE_LLM_QUERY_OPTIMIZER:
+            stage_started = perf_counter()
+            conversation_context = []
 
-        conversation_context = []
+            for m in messages:
+                if m["role"] == "user":
+                    conversation_context.append({
+                        "role": "user",
+                        "content": m["content"],
+                    })
 
-        for m in messages:
-            if m["role"] == "user":
-                conversation_context.append({
-                    "role": "user",
-                    "content": m["content"],
-                })
+                elif m["role"] == "assistant":
+                    conversation_context.append({
+                        "role": "assistant",
+                        "content": m["content"][:500],
+                    })
 
-            elif m["role"] == "assistant":
-                # Preserve recommendation/history context
-                conversation_context.append({
-                    "role": "assistant",
-                    "content": m["content"][:500],
-                })
+            query_messages = [
+                {
+                    "role": "system",
+                    "content": QUERY_SYSTEM_PROMPT,
+                },
+                *conversation_context,
+            ]
 
-        query_messages = [
-            {
-                "role": "system",
-                "content": QUERY_SYSTEM_PROMPT,
-            },
-            *conversation_context,
-        ]
+            try:
+                retrieval_query = generate_reply(query_messages)
+            except Exception as exc:
+                logger.warning(
+                    "query_optimizer_failed request_id=%s error=%s",
+                    request_id,
+                    exc,
+                )
+                pass
+            finally:
+                timings["query_optimizer"] = perf_counter() - stage_started
 
-        retrieval_query = generate_reply(query_messages)
+        stage_started = perf_counter()
+        retrieved = self.retriever.retrieve(
+            retrieval_query,
+            k=settings.TOP_K_RETRIEVAL,
+        )
+        timings["retrieval"] = perf_counter() - stage_started
 
-        retrieved = self.retriever.retrieve(retrieval_query, k=40)
+        stage_started = perf_counter()
         ranked = rerank(
             query=retrieval_query,
             candidates=retrieved,
-            top_k=10,
+            top_k=settings.TOP_K_FINAL,
         )
+        timings["rerank"] = perf_counter() - stage_started
         catalog_by_name = {r.item.name: r.item for r in ranked}
 
         llm_messages = [
@@ -125,13 +204,21 @@ class SHLAgent:
         ]
 
         try:
+            stage_started = perf_counter()
             agent_response = _parse_agent_response(
                 generate_reply(
                     llm_messages,
                     response_format={"type": "json_object"},
                 )
             )
-        except Exception:
+            timings["final_llm"] = perf_counter() - stage_started
+        except Exception as exc:
+            timings["final_llm"] = perf_counter() - stage_started
+            logger.warning(
+                "final_llm_failed request_id=%s error=%s",
+                request_id,
+                exc,
+            )
             agent_response = _fallback_response()
 
         recommendation_names = (
@@ -165,19 +252,30 @@ class SHLAgent:
             )
             for name in recommendation_names
             if name in catalog_by_name
-]
+        ]
 
         final_reply = (
             agent_response.reply
             or agent_response.clarification_question
             or ""
-            )   
+        )
 
         if recommendations:
             final_reply += "\n\nRecommended assessments:\n"
             final_reply += "\n".join(
                 f"- {r.name}" for r in recommendations
             )
+
+        timings["total"] = perf_counter() - request_started
+        self._log_timing(
+            request_id,
+            timings,
+            messages=len(messages),
+            retrieved=len(retrieved),
+            ranked=len(ranked),
+            recommendations=len(recommendations),
+            optimizer_enabled=settings.ENABLE_LLM_QUERY_OPTIMIZER,
+        )
 
         return ChatResponse(
             reply=final_reply,
