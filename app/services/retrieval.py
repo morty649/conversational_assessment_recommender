@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.config import settings
+
+
 class HybridRetriever:
     def __init__(self, vector_store, bm25_store):
         self.vector_store = vector_store
         self.bm25_store = bm25_store
 
     def retrieve(self, query: str, k: int = 20) -> list[dict]:
-        semantic = self.vector_store.semantic_search(query, k=k)
+        semantic = {"metadatas": [[]], "distances": [[]]}
+        if settings.ENABLE_SEMANTIC_RETRIEVAL:
+            semantic = self.vector_store.semantic_search(query, k=k)
+
         lexical = self.bm25_store.search(query, k=k)
 
         merged: dict[str, dict[str, Any]] = {}

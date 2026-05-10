@@ -208,9 +208,9 @@ Create a `.env` file:
 GROQ_API_KEY=your_groq_api_key
 ```
 
-Optional settings are defined in `app/core/config.py`, including model name, catalog path, Chroma path, and top-k retrieval limits.
+Optional settings are defined in `app/core/config.py`, including model name, catalog path, Chroma path, retrieval-mode flags, and top-k retrieval limits.
 
-By default, local development can download the embedding model if it is not already cached. The Docker image pre-downloads the embedding model, builds the Chroma index during image build, and then runs with `EMBED_LOCAL_FILES_ONLY=true`. This avoids model downloads and index rebuilding during Render startup.
+By default, local development can download the embedding model if it is not already cached. The default embedding model is `sentence-transformers/all-MiniLM-L6-v2`, which is lighter and faster than `all-mpnet-base-v2` for deployment on smaller CPUs. The Docker image pre-downloads the embedding model, builds the Chroma index during image build, and then runs with `EMBED_LOCAL_FILES_ONLY=true`. This avoids model downloads and index rebuilding during Render startup.
 
 ### 3. Build or refresh indexes
 
@@ -219,6 +219,14 @@ The repository includes catalog data and a persisted Chroma index. If the catalo
 ```bash
 PYTHONPATH=. python scripts/build_indexes.py
 ```
+
+To run lexical-only retrieval without vector embeddings, set:
+
+```text
+ENABLE_SEMANTIC_RETRIEVAL=false
+```
+
+This keeps BM25 retrieval enabled and is useful for isolating semantic-search latency in production.
 
 ### 4. Run the API
 

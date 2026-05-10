@@ -5,11 +5,12 @@ class Settings(BaseSettings):
     GROQ_MODEL: str = "openai/gpt-oss-120b"
     ENABLE_LLM_QUERY_OPTIMIZER: bool = False
     ENABLE_CHAT_TIMING_LOGS: bool = True
+    ENABLE_SEMANTIC_RETRIEVAL: bool = True
 
     CHROMA_PATH: str = "data/chroma"
     CATALOG_PATH: str = "data/shl_catalog.json"
 
-    EMBED_MODEL: str = "sentence-transformers/all-mpnet-base-v2"
+    EMBED_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
     EMBED_LOCAL_FILES_ONLY: bool = False
 
     TOP_K_RETRIEVAL: int = 20

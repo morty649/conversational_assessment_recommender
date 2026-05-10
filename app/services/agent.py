@@ -275,6 +275,7 @@ class SHLAgent:
             ranked=len(ranked),
             recommendations=len(recommendations),
             optimizer_enabled=settings.ENABLE_LLM_QUERY_OPTIMIZER,
+            semantic_enabled=settings.ENABLE_SEMANTIC_RETRIEVAL,
         )
 
         return ChatResponse(
