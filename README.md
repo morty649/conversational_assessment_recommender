@@ -301,6 +301,11 @@ GET https://your-render-service.onrender.com/health
 POST https://your-render-service.onrender.com/chat
 ```
 
+I Downloaded the json file from Internet and set it into data/ for this purpose.
+Using 
+
+    curl -o shl_product_catalog.json "https://tcp-us-prod-rnd.shl.com/voiceRater/shl-ai-hiring/shl_product_catalog.json"
+
 ## Design Decisions
 
 ### Stateless API
